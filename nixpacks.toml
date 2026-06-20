@@ -1,0 +1,8 @@
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["node ./build.mjs"]
+
+[start]
+cmd = "node --enable-source-maps ./dist/index.mjs"
