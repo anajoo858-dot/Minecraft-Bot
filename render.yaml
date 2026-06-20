@@ -1,0 +1,10 @@
+services:
+    - type: web
+      name: minecraft-bot-dashboard
+      env: node
+      buildCommand: npm install
+      startCommand: node index.js
+      envVars:
+        - key: PORT
+          generateValue: true
+  
