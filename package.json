@@ -1,0 +1,17 @@
+{
+  "name": "minecraft-bot-dashboard",
+  "version": "1.0.0",
+  "description": "Minecraft bot dashboard with live stats and auto-auth",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "mineflayer": "^4.23.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
