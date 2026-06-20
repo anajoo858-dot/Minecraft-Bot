@@ -412,10 +412,21 @@ let allLogs = [];
 let activeFilter = 'all';
 let currentPass = null;
 
+/* ── Session ID (private per browser) ──────────────────── */
+function getSessionId() {
+  let id = localStorage.getItem('botSessionId');
+  if (!id || !/^[a-zA-Z0-9-]{8,64}$/.test(id)) {
+    id = 'sess-' + ([...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2,'0')).join(''));
+    localStorage.setItem('botSessionId', id);
+  }
+  return id;
+}
+const SESSION_ID = getSessionId();
+
 /* ── WebSocket ─────────────────────────────────────────── */
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws = new WebSocket(proto + '//' + location.host + '/ws?session=' + SESSION_ID);
   ws.onopen  = () => { clearTimeout(reconnTimer); setPill(true); };
   ws.onmessage = (e) => {
     const { type, payload } = JSON.parse(e.data);

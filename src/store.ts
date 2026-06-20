@@ -13,17 +13,22 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
+function sessionDir(sessionId: string): string {
+  const dir = path.join(dataDir, "sessions", sessionId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function readJson<T>(file: string, defaultVal: T): T {
-  const fp = path.join(dataDir, file);
   try {
-    return JSON.parse(fs.readFileSync(fp, "utf8")) as T;
+    return JSON.parse(fs.readFileSync(file, "utf8")) as T;
   } catch {
     return defaultVal;
   }
 }
 
 function writeJson(file: string, data: unknown): void {
-  fs.writeFileSync(path.join(dataDir, file), JSON.stringify(data, null, 2));
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
 export interface BotConfig {
@@ -64,27 +69,31 @@ const DEFAULT_CONFIG: BotConfig = {
   proxyPassword: "",
 };
 
-export function getConfig(): BotConfig {
-  return { ...DEFAULT_CONFIG, ...readJson<Partial<BotConfig>>("config.json", {}) };
+export function getConfig(sessionId: string): BotConfig {
+  const file = path.join(sessionDir(sessionId), "config.json");
+  return { ...DEFAULT_CONFIG, ...readJson<Partial<BotConfig>>(file, {}) };
 }
 
-export function saveConfig(cfg: Partial<BotConfig>): BotConfig {
-  const merged = { ...DEFAULT_CONFIG, ...readJson<Partial<BotConfig>>("config.json", {}), ...cfg };
-  writeJson("config.json", merged);
+export function saveConfig(sessionId: string, cfg: Partial<BotConfig>): BotConfig {
+  const file = path.join(sessionDir(sessionId), "config.json");
+  const merged = { ...DEFAULT_CONFIG, ...readJson<Partial<BotConfig>>(file, {}), ...cfg };
+  writeJson(file, merged);
   return merged;
 }
 
-export function getPassword(host: string, port: number): string | null {
-  const passwords = readJson<Record<string, string>>("passwords.json", {});
+export function getPassword(sessionId: string, host: string, port: number): string | null {
+  const file = path.join(sessionDir(sessionId), "passwords.json");
+  const passwords = readJson<Record<string, string>>(file, {});
   return passwords[`${host}:${port}`] ?? null;
 }
 
-export function getOrCreatePassword(host: string, port: number): string {
-  const passwords = readJson<Record<string, string>>("passwords.json", {});
+export function getOrCreatePassword(sessionId: string, host: string, port: number): string {
+  const file = path.join(sessionDir(sessionId), "passwords.json");
+  const passwords = readJson<Record<string, string>>(file, {});
   const key = `${host}:${port}`;
   if (!passwords[key]) {
     passwords[key] = crypto.randomBytes(10).toString("hex");
-    writeJson("passwords.json", passwords);
+    writeJson(file, passwords);
   }
   return passwords[key];
 }

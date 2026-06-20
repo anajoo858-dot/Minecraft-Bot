@@ -31,7 +31,8 @@ const MAX_LOGS = 500;
 const RECONNECT_BASE_MS = 5_000;
 const RECONNECT_MAX_MS = 60_000;
 
-class BotManager {
+export class BotManager {
+  private sessionId: string;
   private bot: Bot | null = null;
   private status: BotStatus = "stopped";
   private stats: BotStats = { health: 0, food: 0, ping: 0, players: 0, reconnects: 0, dropped: 0, uptime: 0, pos: null };
@@ -51,6 +52,10 @@ class BotManager {
   private onLog: LogCallback = () => {};
   private onStats: StatsCallback = () => {};
   private onPassword: PasswordCallback = () => {};
+
+  constructor(sessionId: string) {
+    this.sessionId = sessionId;
+  }
 
   setCallbacks(cb: {
     onStatus: StatusCallback;
@@ -79,7 +84,7 @@ class BotManager {
     if (this.logs.length > MAX_LOGS) this.logs.shift();
     this.onLog(entry);
     const pinoLevel = (level === "success" || level === "chat") ? "info" : level;
-    logger[pinoLevel]({ msg: message });
+    logger[pinoLevel]({ session: this.sessionId.slice(0, 8), msg: message });
   }
 
   private setStatus(s: BotStatus) {
@@ -96,7 +101,7 @@ class BotManager {
     this.cancelReconnect();
     this.shouldReconnect = true;
 
-    const cfg = { ...getConfig(), ...overrideConfig };
+    const cfg = { ...getConfig(this.sessionId), ...overrideConfig };
     this.currentConfig = cfg;
 
     if (!cfg.host) {
@@ -115,6 +120,12 @@ class BotManager {
     this.log("info", "Bot stopped by user");
   }
 
+  destroy() {
+    this.shouldReconnect = false;
+    this.cancelReconnect();
+    this.destroyBot(true);
+  }
+
   sendChat(message: string) {
     if (this.bot && this.status === "online") {
       this.bot.chat(message);
@@ -126,7 +137,7 @@ class BotManager {
     this.log("info", `Connecting to ${cfg.host}:${cfg.port} as ${cfg.username}…`);
 
     if (cfg.autoAuth) {
-      this.currentPassword = getOrCreatePassword(cfg.host, cfg.port);
+      this.currentPassword = getOrCreatePassword(this.sessionId, cfg.host, cfg.port);
       this.onPassword(this.currentPassword);
       this.log("info", `Auto-auth enabled — password ready for ${cfg.host}:${cfg.port}`);
     } else {
@@ -257,7 +268,6 @@ class BotManager {
       this.emitStats();
     });
 
-    // Auto-drop: drop all inventory items when collecting anything
     if (cfg.autoDrop) {
       bot.on("playerCollect", (collector) => {
         if (collector.username !== bot.username) return;
@@ -267,10 +277,7 @@ class BotManager {
           let count = 0;
           const dropNext = (i: number) => {
             if (i >= items.length) {
-              if (count > 0) {
-                this.stats.dropped += count;
-                this.emitStats();
-              }
+              if (count > 0) { this.stats.dropped += count; this.emitStats(); }
               return;
             }
             bot.tossStack(items[i])
@@ -305,17 +312,12 @@ class BotManager {
 
     if (isRegister) {
       this.log("info", "Auth plugin detected — registering with saved password");
-      setTimeout(() => {
-        this.bot?.chat(`/register ${this.currentPassword} ${this.currentPassword}`);
-      }, 1000);
+      setTimeout(() => { this.bot?.chat(`/register ${this.currentPassword} ${this.currentPassword}`); }, 1000);
       return;
     }
-
     if (isLogin) {
       this.log("info", "Auth plugin detected — logging in with saved password");
-      setTimeout(() => {
-        this.bot?.chat(`/login ${this.currentPassword}`);
-      }, 1000);
+      setTimeout(() => { this.bot?.chat(`/login ${this.currentPassword}`); }, 1000);
     }
   }
 
@@ -347,30 +349,21 @@ class BotManager {
   }
 
   private cancelReconnect() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
   }
 
   private startTimers(bot: Bot, cfg: BotConfig) {
     this.stopTimers();
 
-    // Stats + uptime ticker
     this.uptimeTimer = setInterval(() => {
-      if (this.startTime) {
-        this.stats.uptime = Math.floor((Date.now() - this.startTime) / 1000);
-      }
+      if (this.startTime) this.stats.uptime = Math.floor((Date.now() - this.startTime) / 1000);
       this.stats.ping = bot.player?.ping ?? 0;
       this.stats.players = Object.keys(bot.players).length;
       const p = bot.entity?.position;
-      if (p) {
-        this.stats.pos = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
-      }
+      if (p) this.stats.pos = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
       this.emitStats();
     }, 2000);
 
-    // Random anti-AFK movement
     if (cfg.randomMovement && cfg.attackMode === "off") {
       const MOVES = ["forward", "back", "left", "right"] as const;
       this.movementTimer = setInterval(() => {
@@ -385,17 +378,14 @@ class BotManager {
       }, 8000 + Math.random() * 7000);
     }
 
-    // Attack loop
     if (cfg.attackMode !== "off") {
       const mode = cfg.attackMode;
       const targetName = cfg.attackPlayerName?.toLowerCase() ?? "";
 
       this.attackTimer = setInterval(() => {
         if (this.status !== "online" || !bot.entity) return;
-
         try {
           let target: typeof bot.entity | null = null;
-
           if (mode === "mob") {
             target = bot.nearestEntity((e) => {
               if (!e || !e.isValid) return false;
@@ -407,39 +397,29 @@ class BotManager {
             );
             target = playerEntry?.entity ?? null;
           }
-
           if (!target || !target.position) return;
-
           const dist = bot.entity.position.distanceTo(target.position);
-
-          // Look at the target always
           const eyePos = target.position.offset(0, (target as { height?: number }).height ?? 1.62, 0);
           bot.lookAt(eyePos, true);
-
           if (dist <= 4) {
             bot.attack(target);
           } else {
-            // Walk towards target
             bot.setControlState("forward", true);
             setTimeout(() => bot.setControlState("forward", false), 400);
           }
-        } catch {
-          // entity may become invalid mid-tick
-        }
+        } catch { /* entity may become invalid mid-tick */ }
       }, 500);
 
-      if (mode === "mob") {
-        this.log("info", "⚔️ Attack mode ON — targeting nearest mob");
-      } else if (mode === "player" && cfg.attackPlayerName) {
+      if (mode === "mob") this.log("info", "⚔️ Attack mode ON — targeting nearest mob");
+      else if (mode === "player" && cfg.attackPlayerName)
         this.log("info", `⚔️ Attack mode ON — targeting player: ${cfg.attackPlayerName}`);
-      }
     }
   }
 
   private stopTimers() {
-    if (this.uptimeTimer)  { clearInterval(this.uptimeTimer);  this.uptimeTimer = null; }
-    if (this.attackTimer)  { clearInterval(this.attackTimer);  this.attackTimer = null; }
-    if (this.movementTimer){ clearInterval(this.movementTimer); this.movementTimer = null; }
+    if (this.uptimeTimer)   { clearInterval(this.uptimeTimer);   this.uptimeTimer = null; }
+    if (this.attackTimer)   { clearInterval(this.attackTimer);   this.attackTimer = null; }
+    if (this.movementTimer) { clearInterval(this.movementTimer); this.movementTimer = null; }
     this.startTime = null;
     this.stats.uptime = 0;
     this.stats.pos = null;
@@ -458,5 +438,3 @@ class BotManager {
     }
   }
 }
-
-export const botManager = new BotManager();
