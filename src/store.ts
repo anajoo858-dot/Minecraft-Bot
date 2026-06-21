@@ -43,6 +43,8 @@ export interface BotConfig {
   autoAuth: boolean;
   attackMode: "off" | "mob" | "player";
   attackPlayerName: string;
+  followMode: boolean;
+  followPlayerName: string;
   proxyEnabled: boolean;
   proxyHost: string;
   proxyPort: number;
@@ -62,6 +64,8 @@ const DEFAULT_CONFIG: BotConfig = {
   autoAuth: true,
   attackMode: "off",
   attackPlayerName: "",
+  followMode: false,
+  followPlayerName: "",
   proxyEnabled: false,
   proxyHost: "",
   proxyPort: 1080,
@@ -87,13 +91,35 @@ export function getPassword(sessionId: string, host: string, port: number): stri
   return passwords[`${host}:${port}`] ?? null;
 }
 
-export function getOrCreatePassword(sessionId: string, host: string, port: number): string {
-  const file = path.join(sessionDir(sessionId), "passwords.json");
-  const passwords = readJson<Record<string, string>>(file, {});
-  const key = `${host}:${port}`;
-  if (!passwords[key]) {
-    passwords[key] = crypto.randomBytes(10).toString("hex");
-    writeJson(file, passwords);
+/**
+ * Returns a stable password for the given username + host + port.
+ *
+ * The password is derived deterministically via HMAC-SHA256 so it is ALWAYS
+ * the same across server restarts and Railway redeploys — no stored state
+ * needed. We still cache it to disk so it shows up in the dashboard, but even
+ * if the disk is wiped the bot will re-derive the same value automatically.
+ */
+export function getOrCreatePassword(
+  sessionId: string,
+  host: string,
+  port: number,
+  username: string = "",
+): string {
+  const key   = `${host}:${port}`;
+  const file  = path.join(sessionDir(sessionId), "passwords.json");
+  const store = readJson<Record<string, string>>(file, {});
+
+  if (!store[key]) {
+    // Derive a deterministic 24-char hex password from username + host + port.
+    // The HMAC key "mc-bot-stable-auth-v1" is a fixed salt — changing it would
+    // rotate all passwords, so leave it alone.
+    store[key] = crypto
+      .createHmac("sha256", "mc-bot-stable-auth-v1")
+      .update(`${username}@${host}:${port}`)
+      .digest("hex")
+      .slice(0, 24);
+    try { writeJson(file, store); } catch { /* non-fatal on ephemeral fs */ }
   }
-  return passwords[key];
+
+  return store[key];
 }
