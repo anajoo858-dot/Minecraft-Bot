@@ -247,7 +247,22 @@ export class BotManager {
       this.startTime = Date.now();
       this.setStatus("online");
       this.log("success", `Spawned in world — ${cfg.host}:${cfg.port}`);
-      this.startTimers(bot, cfg);
+
+      if (cfg.autoAuth && this.currentPassword) {
+        // Proactively attempt login right on spawn so we beat short kick timeouts.
+        // The message-based handler still fires as a fallback.
+        const pw = this.currentPassword;
+        setTimeout(() => {
+          if (this.bot && this.status === "online") {
+            this.log("info", "Auto-auth: sending /login on spawn…");
+            this.bot.chat(`/login ${pw}`);
+          }
+        }, 400);
+        // Delay attack/movement timers until after auth has had time to complete.
+        setTimeout(() => this.startTimers(bot, cfg), 3000);
+      } else {
+        this.startTimers(bot, cfg);
+      }
     });
 
     bot.on("chat", (username, message) => {
@@ -260,11 +275,17 @@ export class BotManager {
     });
 
     bot.on("kicked", (reason) => {
+      // Stop timers and clear movement immediately — don't wait for handleDisconnect
+      this.stopTimers();
+      try { bot.clearControlStates(); } catch {}
       this.log("warn", `Kicked: ${reason}`);
       this.handleDisconnect();
     });
 
     bot.on("end", (reason) => {
+      // Stop timers and clear movement immediately so no packets fire during transfer
+      this.stopTimers();
+      try { bot.clearControlStates(); } catch {}
       this.log("warn", `Connection ended: ${reason || "unknown"}`);
       this.handleDisconnect();
     });
@@ -347,7 +368,12 @@ export class BotManager {
       lower.includes("please register") ||
       lower.includes("you need to register") ||
       lower.includes("register to play") ||
-      lower.includes("use /register");
+      lower.includes("use /register") ||
+      lower.includes("not registered") ||
+      lower.includes("haven't registered") ||
+      lower.includes("register first") ||
+      lower.includes("account does not exist") ||
+      lower.includes("create an account");
 
     const isLogin =
       lower.includes("/login") ||
@@ -356,16 +382,36 @@ export class BotManager {
       lower.includes("please log in") ||
       lower.includes("use /login") ||
       lower.includes("not logged") ||
-      lower.includes("not authenticated");
+      lower.includes("not authenticated") ||
+      lower.includes("authenticate") ||
+      lower.includes("log in to") ||
+      lower.includes("login to") ||
+      lower.includes("wrong password") ||
+      lower.includes("incorrect password") ||
+      lower.includes("session expired");
 
     if (isRegister) {
       this.log("info", "Auth plugin detected — registering with saved password");
-      setTimeout(() => { this.bot?.chat(`/register ${this.currentPassword} ${this.currentPassword}`); }, 1000);
+      setTimeout(() => {
+        if (this.bot && this.status === "online") {
+          this.bot.chat(`/register ${this.currentPassword} ${this.currentPassword}`);
+          // After registering, attempt login shortly after
+          setTimeout(() => {
+            if (this.bot && this.status === "online") {
+              this.bot.chat(`/login ${this.currentPassword}`);
+            }
+          }, 800);
+        }
+      }, 300);
       return;
     }
     if (isLogin) {
       this.log("info", "Auth plugin detected — logging in with saved password");
-      setTimeout(() => { this.bot?.chat(`/login ${this.currentPassword}`); }, 1000);
+      setTimeout(() => {
+        if (this.bot && this.status === "online") {
+          this.bot.chat(`/login ${this.currentPassword}`);
+        }
+      }, 300);
     }
   }
 
