@@ -421,6 +421,29 @@ export class BotManager {
       lower.includes("registrate") ||
       lower.includes("registrieren");
 
+    const isLoginSuccess =
+      lower.includes("successfully logged in") ||
+      lower.includes("logged in successfully") ||
+      lower.includes("you are now logged in") ||
+      lower.includes("you have been logged in") ||
+      lower.includes("you are logged in") ||
+      lower.includes("login successful") ||
+      lower.includes("authentication successful") ||
+      lower.includes("authenticated successfully") ||
+      lower.includes("welcome back") ||
+      lower.includes("has logged in") ||
+      lower.includes("you logged in") ||
+      lower.includes("acceso correcto") ||
+      lower.includes("sesion iniciada") ||
+      lower.includes("erfolgreich eingeloggt") ||
+      lower.includes("connecté avec succès") ||
+      lower.includes("vous êtes connecté");
+
+    if (isLoginSuccess) {
+      this.log("success", "✅ Auto-auth: login confirmed by server!");
+      return;
+    }
+
     const isLogin =
       lower.includes("/login") ||
       lower.includes("please login") ||
