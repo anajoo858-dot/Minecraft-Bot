@@ -30,22 +30,18 @@ type PasswordCallback = (password: string | null) => void;
 const MAX_LOGS = 500;
 
 const ARMOR_SLOTS: Record<string, "head" | "torso" | "legs" | "feet"> = {};
-// helmets / head
 for (const m of ["leather", "chainmail", "iron", "golden", "diamond", "netherite", "turtle"]) {
   ARMOR_SLOTS[`${m}_helmet`] = "head";
 }
 ARMOR_SLOTS["carved_pumpkin"] = "head";
 ARMOR_SLOTS["player_head"]    = "head";
-// chestplates / torso
 for (const m of ["leather", "chainmail", "iron", "golden", "diamond", "netherite"]) {
   ARMOR_SLOTS[`${m}_chestplate`] = "torso";
 }
 ARMOR_SLOTS["elytra"] = "torso";
-// leggings
 for (const m of ["leather", "chainmail", "iron", "golden", "diamond", "netherite"]) {
   ARMOR_SLOTS[`${m}_leggings`] = "legs";
 }
-// boots
 for (const m of ["leather", "chainmail", "iron", "golden", "diamond", "netherite"]) {
   ARMOR_SLOTS[`${m}_boots`] = "feet";
 }
@@ -69,10 +65,14 @@ export class BotManager {
   private uptimeTimer: ReturnType<typeof setInterval> | null = null;
   private attackTimer: ReturnType<typeof setInterval> | null = null;
   private movementTimer: ReturnType<typeof setInterval> | null = null;
+  // FIX: track the forward-release timeout so it can be cancelled on disconnect
+  private forwardTimer: ReturnType<typeof setTimeout> | null = null;
   private startTime: number | null = null;
   private shouldReconnect = false;
   private currentConfig: BotConfig | null = null;
   private currentPassword: string | null = null;
+  // FIX: flag to suppress reconnect when server is doing a transfer
+  private transferring = false;
 
   private onStatus: StatusCallback = () => {};
   private onLog: LogCallback = () => {};
@@ -126,6 +126,7 @@ export class BotManager {
     if (this.bot) this.destroyBot(false);
     this.cancelReconnect();
     this.shouldReconnect = true;
+    this.transferring = false;
 
     const cfg = { ...getConfig(this.sessionId), ...overrideConfig };
     this.currentConfig = cfg;
@@ -140,6 +141,7 @@ export class BotManager {
 
   stop() {
     this.shouldReconnect = false;
+    this.transferring = false;
     this.cancelReconnect();
     this.destroyBot(true);
     this.setStatus("stopped");
@@ -148,6 +150,7 @@ export class BotManager {
 
   destroy() {
     this.shouldReconnect = false;
+    this.transferring = false;
     this.cancelReconnect();
     this.destroyBot(true);
   }
@@ -160,6 +163,7 @@ export class BotManager {
 
   private spawnBot(cfg: BotConfig) {
     this.setStatus("connecting");
+    this.transferring = false;
     this.log("info", `Connecting to ${cfg.host}:${cfg.port} as ${cfg.username}…`);
 
     if (cfg.autoAuth) {
@@ -249,20 +253,33 @@ export class BotManager {
       this.log("success", `Spawned in world — ${cfg.host}:${cfg.port}`);
 
       if (cfg.autoAuth && this.currentPassword) {
-        // Proactively attempt login right on spawn so we beat short kick timeouts.
-        // The message-based handler still fires as a fallback.
         const pw = this.currentPassword;
+        // FIX: Send login faster (200ms) so we beat the typical 1-second auth kick timer.
+        // We rely ONLY on this proactive attempt + the message handler as fallback.
+        // Do NOT also send in the message handler if the proactive one already succeeded.
         setTimeout(() => {
-          if (this.bot && this.status === "online") {
+          if (this.bot === bot && this.status === "online") {
             this.log("info", "Auto-auth: sending /login on spawn…");
-            this.bot.chat(`/login ${pw}`);
+            bot.chat(`/login ${pw}`);
           }
-        }, 400);
-        // Delay attack/movement timers until after auth has had time to complete.
-        setTimeout(() => this.startTimers(bot, cfg), 3000);
+        }, 200);
+        // Delay attack/movement until after auth window has fully passed
+        setTimeout(() => this.startTimers(bot, cfg), 4000);
       } else {
         this.startTimers(bot, cfg);
       }
+    });
+
+    // FIX: Handle 1.20.5+ server transfer packets — stop timers immediately
+    // so no movement/attack packets are sent during the transfer window.
+    // Do NOT reconnect; the transfer is handled externally.
+    bot.on("transfer" as Parameters<typeof bot.on>[0], (host: unknown, port: unknown) => {
+      this.log("info", `🔀 Server transfer → ${host}:${port} — pausing bot…`);
+      this.transferring = true;
+      this.stopTimers();
+      try { bot.clearControlStates(); } catch {}
+      // After a short window let the new spawn re-enable timers
+      setTimeout(() => { this.transferring = false; }, 10_000);
     });
 
     bot.on("chat", (username, message) => {
@@ -271,11 +288,10 @@ export class BotManager {
     });
 
     bot.on("message", (jsonMsg) => {
-      this.handleAuthMessage(jsonMsg.toString(), cfg);
+      this.handleAuthMessage(bot, jsonMsg.toString(), cfg);
     });
 
     bot.on("kicked", (reason) => {
-      // Stop timers and clear movement immediately — don't wait for handleDisconnect
       this.stopTimers();
       try { bot.clearControlStates(); } catch {}
       this.log("warn", `Kicked: ${reason}`);
@@ -283,9 +299,33 @@ export class BotManager {
     });
 
     bot.on("end", (reason) => {
-      // Stop timers and clear movement immediately so no packets fire during transfer
+      // FIX: stop timers AND cancel the loose forward-release timeout immediately
+      // BEFORE anything else, so no stale packets fire during a server transfer window.
       this.stopTimers();
       try { bot.clearControlStates(); } catch {}
+
+      // FIX: if the server is doing a BungeeCord-style redirect, the end event fires
+      // but we should not immediately reconnect — wait briefly to let the new
+      // connection establish via the spawn event on the new server.
+      const lowerReason = (reason ?? "").toLowerCase();
+      const isTransfer =
+        lowerReason.includes("transfer") ||
+        lowerReason.includes("redirect") ||
+        lowerReason.includes("moving") ||
+        this.transferring;
+
+      if (isTransfer) {
+        this.log("info", `Server redirect detected (${reason || "transfer"}) — waiting for new spawn…`);
+        // Give the new server 12 seconds to spawn the bot before we treat it as a real disconnect
+        setTimeout(() => {
+          if (this.status !== "online") {
+            this.log("warn", "No spawn after redirect — reconnecting normally…");
+            this.handleDisconnect();
+          }
+        }, 12_000);
+        return;
+      }
+
       this.log("warn", `Connection ended: ${reason || "unknown"}`);
       this.handleDisconnect();
     });
@@ -335,7 +375,6 @@ export class BotManager {
         }, 600);
       });
     } else {
-      // Auto-equip armor when autoDrop is OFF
       bot.on("playerCollect", (collector) => {
         if (collector.username !== bot.username) return;
         setTimeout(() => {
@@ -359,10 +398,11 @@ export class BotManager {
     }
   }
 
-  private handleAuthMessage(text: string, cfg: BotConfig) {
+  private handleAuthMessage(bot: Bot, text: string, cfg: BotConfig) {
     if (!cfg.autoAuth || !this.currentPassword) return;
     const lower = text.toLowerCase();
 
+    // FIX: Expanded auth patterns covering AuthMe, LoginSecurity, nLogin, and others.
     const isRegister =
       lower.includes("/register") ||
       lower.includes("please register") ||
@@ -373,7 +413,13 @@ export class BotManager {
       lower.includes("haven't registered") ||
       lower.includes("register first") ||
       lower.includes("account does not exist") ||
-      lower.includes("create an account");
+      lower.includes("create an account") ||
+      lower.includes("no account") ||
+      lower.includes("unknown account") ||
+      lower.includes("this account") ||
+      lower.includes("para registrarte") ||
+      lower.includes("registrate") ||
+      lower.includes("registrieren");
 
     const isLogin =
       lower.includes("/login") ||
@@ -388,30 +434,41 @@ export class BotManager {
       lower.includes("login to") ||
       lower.includes("wrong password") ||
       lower.includes("incorrect password") ||
-      lower.includes("session expired");
+      lower.includes("session expired") ||
+      lower.includes("inicia sesion") ||
+      lower.includes("iniciar sesion") ||
+      lower.includes("einloggen") ||
+      lower.includes("identifie");
+
+    const pw = this.currentPassword;
 
     if (isRegister) {
       this.log("info", "Auth plugin detected — registering with saved password");
+      // FIX: send register faster (100ms) to beat kick timers, then login at 400ms
       setTimeout(() => {
-        if (this.bot && this.status === "online") {
-          this.bot.chat(`/register ${this.currentPassword} ${this.currentPassword}`);
-          // After registering, attempt login shortly after
+        if (this.bot === bot && this.status === "online") {
+          bot.chat(`/register ${pw} ${pw}`);
           setTimeout(() => {
-            if (this.bot && this.status === "online") {
-              this.bot.chat(`/login ${this.currentPassword}`);
+            if (this.bot === bot && this.status === "online") {
+              bot.chat(`/login ${pw}`);
             }
-          }, 800);
+          }, 400);
         }
-      }, 300);
+      }, 100);
       return;
     }
+
     if (isLogin) {
+      // Only respond to login prompts if we haven't already proactively sent /login
+      // (the spawn handler sends at 200ms, so skip if bot just spawned within 1.5s)
+      if (this.startTime && Date.now() - this.startTime < 1_500) return;
       this.log("info", "Auth plugin detected — logging in with saved password");
+      // FIX: send login faster (100ms) to beat kick timers
       setTimeout(() => {
-        if (this.bot && this.status === "online") {
-          this.bot.chat(`/login ${this.currentPassword}`);
+        if (this.bot === bot && this.status === "online") {
+          bot.chat(`/login ${pw}`);
         }
-      }, 300);
+      }, 100);
     }
   }
 
@@ -498,8 +555,14 @@ export class BotManager {
           if (dist <= 4) {
             bot.attack(target);
           } else {
+            // FIX: cancel any pending forward-release before setting forward again,
+            // and track the new timeout so stopTimers() can cancel it.
+            if (this.forwardTimer) { clearTimeout(this.forwardTimer); this.forwardTimer = null; }
             bot.setControlState("forward", true);
-            setTimeout(() => bot.setControlState("forward", false), 400);
+            this.forwardTimer = setTimeout(() => {
+              this.forwardTimer = null;
+              try { bot.setControlState("forward", false); } catch {}
+            }, 400);
           }
         } catch { /* entity may become invalid mid-tick */ }
       }, 500);
@@ -514,6 +577,8 @@ export class BotManager {
     if (this.uptimeTimer)   { clearInterval(this.uptimeTimer);   this.uptimeTimer = null; }
     if (this.attackTimer)   { clearInterval(this.attackTimer);   this.attackTimer = null; }
     if (this.movementTimer) { clearInterval(this.movementTimer); this.movementTimer = null; }
+    // FIX: also cancel the tracked forward-release timeout
+    if (this.forwardTimer)  { clearTimeout(this.forwardTimer);   this.forwardTimer = null; }
     this.startTime = null;
     this.stats.uptime = 0;
     this.stats.pos = null;
