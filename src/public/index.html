@@ -307,6 +307,22 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-s
           <label class="toggle"><input type="checkbox" id="cfg-auth" checked/><span class="toggle-slider"></span></label>
         </div>
 
+        <!-- Follow mode toggle -->
+        <div class="toggle-row">
+          <span>
+            🏃 Follow Mode
+            <span style="font-size:10px;color:var(--muted);display:block">Bot follows a player by name</span>
+          </span>
+          <label class="toggle"><input type="checkbox" id="cfg-follow-on" onchange="toggleFollowUI()"/><span class="toggle-slider"></span></label>
+        </div>
+        <div id="follow-sub" class="attack-sub" style="display:none">
+          <div class="form-group">
+            <label>Player Name to Follow</label>
+            <input id="cfg-follow-name" type="text" placeholder="Enter exact player name…"/>
+          </div>
+          <div style="font-size:10px;color:var(--muted);line-height:1.5">Bot will sprint toward this player and stop within 3 blocks. Disables random movement.</div>
+        </div>
+
         <!-- Attack mode toggle -->
         <div class="toggle-row">
           <span>
@@ -628,10 +644,12 @@ function handleCmdKey(e) {
 
 /* ── Config ────────────────────────────────────────────── */
 function applyConfig() {
-  const host = document.getElementById('cfg-host').value.trim();
+  const host       = document.getElementById('cfg-host').value.trim();
   const attackOn   = document.getElementById('cfg-attack-on').checked;
   const attackMob  = document.getElementById('cfg-attack-mob').checked;
   const attackName = document.getElementById('cfg-attack-name').value.trim();
+  const followOn   = document.getElementById('cfg-follow-on').checked;
+  const followName = document.getElementById('cfg-follow-name').value.trim();
   const proxyOn    = document.getElementById('cfg-proxy-on').checked;
   sendCmd('config', { config: {
     host,
@@ -643,6 +661,8 @@ function applyConfig() {
     autoDrop:         document.getElementById('cfg-drop').checked,
     knockbackEvasion: document.getElementById('cfg-kb').checked,
     autoAuth:         document.getElementById('cfg-auth').checked,
+    followMode:       followOn,
+    followPlayerName: followName,
     attackMode:       attackOn ? (attackMob ? 'mob' : 'player') : 'off',
     attackPlayerName: attackName,
     proxyEnabled:     proxyOn,
@@ -666,6 +686,10 @@ function loadConfig(cfg) {
   document.getElementById('cfg-kb').checked   = !!cfg.knockbackEvasion;
   document.getElementById('cfg-auth').checked = cfg.autoAuth !== false;
 
+  document.getElementById('cfg-follow-on').checked   = !!cfg.followMode;
+  document.getElementById('cfg-follow-name').value   = cfg.followPlayerName || '';
+  toggleFollowUI();
+
   const attackOn = cfg.attackMode && cfg.attackMode !== 'off';
   document.getElementById('cfg-attack-on').checked = attackOn;
   if (cfg.attackMode === 'player') {
@@ -684,6 +708,11 @@ function loadConfig(cfg) {
   document.getElementById('cfg-proxy-user').value   = cfg.proxyUsername || '';
   document.getElementById('cfg-proxy-pass').value   = cfg.proxyPassword || '';
   toggleProxyUI();
+}
+
+function toggleFollowUI() {
+  const on = document.getElementById('cfg-follow-on').checked;
+  document.getElementById('follow-sub').style.display = on ? 'flex' : 'none';
 }
 
 function toggleProxyUI() {
