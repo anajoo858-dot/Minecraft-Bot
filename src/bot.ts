@@ -28,6 +28,32 @@ type StatsCallback = (stats: BotStats) => void;
 type PasswordCallback = (password: string | null) => void;
 
 const MAX_LOGS = 500;
+
+const ARMOR_SLOTS: Record<string, "head" | "torso" | "legs" | "feet"> = {};
+// helmets / head
+for (const m of ["leather", "chainmail", "iron", "golden", "diamond", "netherite", "turtle"]) {
+  ARMOR_SLOTS[`${m}_helmet`] = "head";
+}
+ARMOR_SLOTS["carved_pumpkin"] = "head";
+ARMOR_SLOTS["player_head"]    = "head";
+// chestplates / torso
+for (const m of ["leather", "chainmail", "iron", "golden", "diamond", "netherite"]) {
+  ARMOR_SLOTS[`${m}_chestplate`] = "torso";
+}
+ARMOR_SLOTS["elytra"] = "torso";
+// leggings
+for (const m of ["leather", "chainmail", "iron", "golden", "diamond", "netherite"]) {
+  ARMOR_SLOTS[`${m}_leggings`] = "legs";
+}
+// boots
+for (const m of ["leather", "chainmail", "iron", "golden", "diamond", "netherite"]) {
+  ARMOR_SLOTS[`${m}_boots`] = "feet";
+}
+
+function armorSlot(itemName: string): "head" | "torso" | "legs" | "feet" | null {
+  return ARMOR_SLOTS[itemName] ?? null;
+}
+
 const RECONNECT_BASE_MS = 5_000;
 const RECONNECT_MAX_MS = 60_000;
 
@@ -286,6 +312,28 @@ export class BotManager {
           };
           dropNext(0);
         }, 600);
+      });
+    } else {
+      // Auto-equip armor when autoDrop is OFF
+      bot.on("playerCollect", (collector) => {
+        if (collector.username !== bot.username) return;
+        setTimeout(() => {
+          if (!bot.inventory) return;
+          const items = bot.inventory.items();
+          const equipNext = (i: number) => {
+            if (i >= items.length) return;
+            const item = items[i];
+            const slot = armorSlot(item.name);
+            if (!slot) { equipNext(i + 1); return; }
+            bot.equip(item, slot)
+              .then(() => {
+                this.log("info", `🛡 Equipped ${item.displayName ?? item.name}`);
+                equipNext(i + 1);
+              })
+              .catch(() => equipNext(i + 1));
+          };
+          equipNext(0);
+        }, 800);
       });
     }
   }
